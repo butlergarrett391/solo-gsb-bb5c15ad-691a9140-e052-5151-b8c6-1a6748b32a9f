@@ -105,6 +105,40 @@ async def test_granted_reservation_locks_budget(client):
 
 
 @pytest.mark.asyncio
+async def test_tiny_delta_reservation_is_granted_not_overflow_rejected(client):
+    # Regression: 1/delta overflows float64 for delta=1e-309; the log-domain
+    # curve keeps the projection finite so the reservation locks its budget.
+    ds = _new_dataset_id("tinydelta")
+    await _register(client, ds, eps=1.0, delta=1e-6)
+
+    r = await client.post(
+        f"/datasets/{ds}/reservations",
+        json=_res("rv-tiny", epsilon=0.1, delta=1e-309),
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["allowed"] is True
+    assert body["status"] == "granted"
+    _, expected, _ = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    assert body["epsilon_after"] == pytest.approx(expected, abs=1e-12)
+    assert body["epsilon_remaining"] == pytest.approx(1.0 - expected, abs=1e-12)
+
+    budget = (await client.get(f"/datasets/{ds}/budget")).json()
+    assert budget["active_reservations"] == 1
+    assert budget["epsilon_reserved"] == pytest.approx(expected, abs=1e-12)
+    assert budget["epsilon_remaining"] == pytest.approx(1.0 - expected, abs=1e-12)
+
+    # Confirming turns the same finite occupancy into a granted request.
+    conf = await client.post(
+        f"/datasets/{ds}/reservations/rv-tiny/confirm",
+        json={"request_id": "req-tiny", "query_type": "gaussian_mean"},
+    )
+    assert conf.status_code == 201
+    assert conf.json()["allowed"] is True
+    assert conf.json()["epsilon_after"] == pytest.approx(expected, abs=1e-12)
+
+
+@pytest.mark.asyncio
 async def test_over_budget_reservation_is_rejected_and_locks_nothing(client):
     ds = _new_dataset_id("rej")
     await _register(client, ds, eps=0.01, delta=1e-6)

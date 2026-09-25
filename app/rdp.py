@@ -29,6 +29,13 @@ The bound above is the standard textbook conversion
 robust upper bound that works for arbitrary query types without any
 mechanism-specific calibration: the ledger treats every request as an
 approximate-DP guarantee rather than exploiting tighter Gaussian accounting.
+
+Numerical note: ``log(1/delta)`` is evaluated in the log domain as
+``-log(delta)``.  Forming the reciprocal ``1/delta`` first overflows to
+``inf`` for ``delta`` below ~5.6e-309 (e.g. ``1e-309``), which would poison
+the whole curve with ``inf`` and make every admission check reject a
+request whose projection is in fact finite.  The negated logarithm stays
+finite and accurate down to the smallest positive double (~5e-324).
 """
 from __future__ import annotations
 
@@ -52,7 +59,10 @@ SAMPLE_ORDERS: tuple[float, ...] = (2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 512.
 def single_rdp_curve(epsilon: float, delta: float) -> list[float]:
     """Return the RDP curve of one (epsilon, delta)-DP mechanism over RDP_ORDERS."""
     if delta > 0.0:
-        log_inv_delta = math.log(1.0 / delta)
+        # log(1/delta) as -log(delta): the reciprocal 1/delta overflows to
+        # inf for delta < ~5.6e-309 (e.g. 1e-309), which would turn every
+        # order of the curve into inf and wrongly reject the admission.
+        log_inv_delta = -math.log(delta)
         return [
             epsilon + log_inv_delta / (alpha - 1.0)
             for alpha in RDP_ORDERS

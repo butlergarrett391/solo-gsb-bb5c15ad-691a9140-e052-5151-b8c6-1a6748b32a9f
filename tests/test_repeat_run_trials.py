@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -172,6 +173,32 @@ async def test_repeat_run_trial_approximate_matches_independent_accounting(clien
     # The feasible count is below the bound and zero-runs state is reported.
     assert 0 < n < 100
     assert body["epsilon_committed"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_repeat_run_trial_with_tiny_delta_stays_finite(client):
+    # Regression: 1/delta overflows float64 for delta=1e-309; the log-domain
+    # curve keeps every projection finite so the trial answers normally.
+    ds = _new_dataset_id("tinydelta")
+    cap, target_delta = 1.0, 1e-6
+    await _register(client, ds, eps=cap, delta=target_delta)
+    group = [(0.1, 1e-309)]
+    r = await _trial(
+        client, ds, [{"epsilon": e, "delta": d} for e, d in group], max_runs=100
+    )
+    assert r.status_code == 200
+    body = r.json()
+    n = body["max_complete_runs"]
+    expected_n = _independent_max_runs([], group, 100, target_delta, cap)
+    assert n == expected_n
+    assert 0 < n < 100
+    assert math.isfinite(body["projection"]["epsilon_projected"])
+    assert body["projection"]["epsilon_projected"] == pytest.approx(
+        _independent_runs([], group, n, target_delta), abs=1e-12
+    )
+    assert body["next_run_projection"]["epsilon_projected"] == pytest.approx(
+        _independent_runs([], group, n + 1, target_delta), abs=1e-12
+    )
 
 
 @pytest.mark.asyncio

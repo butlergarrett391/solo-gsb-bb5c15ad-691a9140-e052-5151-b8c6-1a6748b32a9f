@@ -66,3 +66,54 @@ def test_rdp_curve_of_approx_dp():
 def test_rdp_curve_of_pure_dp_is_flat():
     curve = rdp.single_rdp_curve(0.42, 0.0)
     assert set(curve) == {0.42}
+
+
+def test_tiny_delta_curve_stays_finite():
+    # 1/delta overflows float64 for delta < ~5.6e-309; the curve is built
+    # from -log(delta) so it stays finite for any positive delta.
+    delta = 1e-309
+    curve = rdp.single_rdp_curve(0.1, delta)
+    assert len(curve) == len(rdp.RDP_ORDERS)
+    assert all(math.isfinite(value) for value in curve)
+    log_inv_delta = -math.log(delta)
+    assert curve[0] == pytest.approx(
+        0.1 + log_inv_delta / (rdp.RDP_ORDERS[0] - 1)
+    )
+    assert curve[-1] == pytest.approx(
+        0.1 + log_inv_delta / (rdp.RDP_ORDERS[-1] - 1)
+    )
+
+
+def test_tiny_delta_curve_down_to_smallest_denormal():
+    curve = rdp.single_rdp_curve(0.2, 5e-324)
+    assert all(math.isfinite(value) for value in curve)
+
+
+def test_tiny_delta_projection_is_finite_and_within_cap():
+    # The ledger scenario: cap 1.0 / delta_cap 1e-6, one (0.1, 1e-309)-DP
+    # request.  The projection is finite and far below the cap, so the
+    # request must not be rejected as over budget.
+    _, eps, order = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    assert math.isfinite(eps)
+    assert 0.1 <= eps < 1.0
+    projected, proj_order = rdp.project_entries([], 0.1, 1e-309, 1e-6)
+    assert projected == pytest.approx(eps)
+    assert proj_order == order
+
+
+def test_tiny_delta_mixed_with_pure_epsilon():
+    # Pure-epsilon entries keep exact addition on top of a tiny-delta curve.
+    _, approx_only, _ = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    _, mixed, _ = rdp.evaluate_entries([(0.3, 0.0), (0.1, 1e-309)], 1e-6)
+    assert mixed == pytest.approx(approx_only + 0.3, abs=1e-9)
+
+
+def test_tiny_delta_composes_with_ordinary_entries():
+    # A tiny-delta entry composes additively per order with ordinary ones.
+    _, combined, _ = rdp.evaluate_entries(
+        [(0.2, 1e-8), (0.1, 1e-309)], 1e-6
+    )
+    _, ordinary, _ = rdp.evaluate_entries([(0.2, 1e-8)], 1e-6)
+    _, tiny, _ = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    assert math.isfinite(combined)
+    assert combined >= max(ordinary, tiny)

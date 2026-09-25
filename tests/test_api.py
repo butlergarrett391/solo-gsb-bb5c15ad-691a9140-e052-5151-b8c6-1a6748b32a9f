@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import tempfile
 
@@ -141,6 +142,46 @@ async def test_pure_epsilon_dp_composition_is_additive(client):
     assert budget["granted_requests"] == 3
     assert budget["epsilon_consumed"] == pytest.approx(0.6, abs=1e-9)
     assert budget["epsilon_remaining"] == pytest.approx(0.4, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_tiny_delta_request_is_granted_not_overflow_rejected(client):
+    # Regression: 1/delta overflows float64 for delta=1e-309, which used to
+    # poison the RDP curve with inf and reject the request as over budget.
+    # The log-domain curve keeps the projection finite (~0.1886 << cap 1.0).
+    ds = _new_dataset_id("tinydelta")
+    await _register(client, ds, eps=1.0, delta=1e-6)
+
+    r = await client.post(
+        f"/datasets/{ds}/requests",
+        json={"request_id": "r-tiny", "query_type": "gaussian_mean",
+              "epsilon": 0.1, "delta": 1e-309},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["allowed"] is True
+    assert body["status"] == "granted"
+    _, expected, expected_order = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    assert body["epsilon_before"] == 0.0
+    assert body["epsilon_after"] == pytest.approx(expected, abs=1e-12)
+    assert body["epsilon_remaining"] == pytest.approx(1.0 - expected, abs=1e-12)
+    assert body["rdp_best_order"] == expected_order
+
+    # Same-key replay returns the stored verdict unchanged.
+    replay = await client.post(
+        f"/datasets/{ds}/requests",
+        json={"request_id": "r-tiny", "query_type": "gaussian_mean",
+              "epsilon": 0.1, "delta": 1e-309},
+    )
+    assert replay.status_code == 200
+    assert replay.json()["idempotent_replay"] is True
+    assert replay.json()["epsilon_after"] == body["epsilon_after"]
+
+    # The live budget view reports the same corrected, finite occupancy.
+    budget = (await client.get(f"/datasets/{ds}/budget")).json()
+    assert budget["epsilon_consumed"] == pytest.approx(expected, abs=1e-12)
+    assert budget["epsilon_remaining"] == pytest.approx(1.0 - expected, abs=1e-12)
+    assert all(math.isfinite(v) for v in budget["rdp_curve"].values())
 
 
 # ------------------------------------------------------------ idempotency --

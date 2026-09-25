@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import itertools
+import math
 import os
 import tempfile
 from datetime import datetime
@@ -128,6 +129,39 @@ async def test_pure_epsilon_batch_composition_is_additive(client):
     budget = await _budget(client, ds)
     assert budget["epsilon_consumed"] == pytest.approx(0.3, abs=1e-12)
     assert budget["epsilon_remaining"] == pytest.approx(0.7, abs=1e-12)
+
+
+@pytest.mark.asyncio
+async def test_batch_with_tiny_delta_items_is_granted(client):
+    # Regression: 1/delta overflows float64 for delta=1e-309; the log-domain
+    # curve keeps the joint projection finite so the whole batch is admitted.
+    ds = _ds("tinydelta")
+    cap_eps, cap_delta = 1.0, 1e-6
+    await _register(client, ds, eps=cap_eps, delta=cap_delta)
+
+    payload = _batch(
+        "b-tiny", [_item("ta", 0.1, 1e-309), _item("tb", 0.1, 1e-309)]
+    )
+    r = await client.post(f"/datasets/{ds}/request-batches", json=payload)
+    assert r.status_code == 201
+    body = r.json()
+    assert body["allowed"] is True
+    assert body["status"] == "granted"
+
+    expected, expected_order = rdp.composed_epsilon(
+        [rdp.single_rdp_curve(it["epsilon"], it["delta"]) for it in payload["items"]],
+        cap_delta,
+    )
+    assert math.isfinite(expected)
+    assert body["epsilon_after"] == pytest.approx(expected, abs=1e-12)
+    assert body["rdp_best_order"] == expected_order
+    assert all(
+        math.isfinite(item["epsilon_after"]) for item in body["items"]
+    )
+
+    budget = await _budget(client, ds)
+    assert budget["granted_requests"] == 2
+    assert budget["epsilon_consumed"] == pytest.approx(expected, abs=1e-12)
 
 
 # -------------------------------------------------------------- all-or-none --
