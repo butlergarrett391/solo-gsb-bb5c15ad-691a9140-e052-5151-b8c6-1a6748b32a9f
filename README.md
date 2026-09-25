@@ -1416,6 +1416,31 @@ EPSILON_TOLERANCE` 的子集为可行。在全部可行子集中按以下顺序�
 * 纯 DP 与近似 DP 混合时，纯 ε 之和作为常数偏移叠加到 RDP 曲线上再统一
   转换。
 
+### 5.1 极小 delta 输入的数值稳定性
+
+申请、批次、预留与各类只读试算中的 `delta` 可以是 `0 <= delta < 1` 内的
+任意值，包括 `1e-309` 这类远小于 `delta_cap` 的**次正规（subnormal）**
+正浮点数。所有路径共用的 RDP 曲线计算使用数值稳定的对数形式
+`log(1/δ) = -log(δ)`，而不是先取倒数再取对数——后者在
+`δ < ~5.6e-309` 时 `1/δ` 会溢出为 `inf`，使整条曲线变成无穷大、申请被
+误判为超预算。修正后投影 epsilon 始终有限，纯 ε 项仍走精确加法，混合
+组合仍按同一张 orders 网格与 `EPSILON_TOLERANCE` 容差裁定；已入账的
+裁定与同键重放保持原结果，预算查询与新提交使用修正后的占用。
+
+例如数据集 `epsilon_cap=1`、`delta_cap=1e-6` 时，向
+**http://localhost:8000**（默认 API 端口，见第 1、3 节）提交
+`epsilon=0.1, delta=1e-309` 的申请，投影 epsilon 约为 `0.1886`，正常
+授权而非误拒：
+
+```bash
+curl -X POST http://localhost:8000/datasets/sales-2026/requests \
+  -H 'Content-Type: application/json' \
+  -d '{"request_id": "req-tiny-delta-0001", "query_type": "gaussian_mean",
+       "epsilon": 0.1, "delta": 1e-309}'
+# -> 201 {"allowed": true, "status": "granted",
+#         "epsilon_after": 0.18855..., "rdp_best_order": 8192.0, ...}
+```
+
 > 该口径使用的是教科书式、与机制无关的保守上界（Mironov 2017 的
 > (ε,δ)-DP→RDP→(ε,δ) 界），不利用高斯机制等的更紧会计；优点是对任意
 > `query_type` 都成立、实现简单可审计。`rdp_curve` 字段暴露各 order 的
@@ -1572,6 +1597,14 @@ PYTHONPATH=. pytest -q
 RDP 数学性质、幂等回放（含拒绝回放）、`request_id` 冲突 409、缺失
 数据集 404，以及 60 路并发申请不超预算、20 路重复 `request_id` 并发仅
 一条被创建。
+
+极小 delta 回归测试另覆盖：`delta=1e-309` 与最小次正规 `5e-324` 的 RDP
+曲线与投影均为有限值、与纯 ε 混合时纯 ε 项仍精确可加；端到端覆盖
+`epsilon_cap=1, delta_cap=1e-6` 下 `epsilon=0.1, delta=1e-309` 的单项
+申请授权与同键幂等重放、真实超额（投影 epsilon 超 cap）仍拒绝且不占额、
+含极小 delta 项的原子批次整批授权、极小 delta 预留的创建与确认（不重复
+扣减）、只读试算（selection plan / repeat-run trial）投影有限，以及预算
+查询 `rdp_curve` 各 order 值均为有限数。
 
 预留相关测试另覆盖：预留锁定/拒绝、预算视图、创建幂等与三种负载冲突
 409、确认转申请且不双重扣减、确认幂等/冲突/终态 409、释放幂等与终态

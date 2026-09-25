@@ -66,3 +66,36 @@ def test_rdp_curve_of_approx_dp():
 def test_rdp_curve_of_pure_dp_is_flat():
     curve = rdp.single_rdp_curve(0.42, 0.0)
     assert set(curve) == {0.42}
+
+
+def test_tiny_delta_curve_is_finite():
+    # 1/delta overflows to inf for delta below ~5.6e-309; the numerically
+    # stable log form must keep the whole curve finite instead.
+    curve = rdp.single_rdp_curve(0.1, 1e-309)
+    assert len(curve) == len(rdp.RDP_ORDERS)
+    assert all(math.isfinite(v) for v in curve)
+    assert curve[0] > curve[-1]
+    assert curve[0] == pytest.approx(
+        0.1 + (-math.log(1e-309)) / (rdp.RDP_ORDERS[0] - 1)
+    )
+
+
+def test_smallest_subnormal_delta_curve_is_finite():
+    curve = rdp.single_rdp_curve(0.1, 5e-324)
+    assert all(math.isfinite(v) for v in curve)
+
+
+def test_tiny_delta_projection_is_finite_and_within_cap():
+    # epsilon_cap=1, delta_cap=1e-6: a (0.1, 1e-309) request has a finite
+    # projection below the cap; the 1/delta overflow previously made it
+    # look over budget.
+    _, eps, _ = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    assert math.isfinite(eps)
+    assert 0.1 <= eps <= 1.0
+
+
+def test_tiny_delta_mixed_with_pure_epsilon():
+    # Pure-epsilon entries stay exactly additive on top of a tiny-delta curve.
+    _, eps_approx, _ = rdp.evaluate_entries([(0.1, 1e-309)], 1e-6)
+    _, eps_mixed, _ = rdp.evaluate_entries([(0.3, 0.0), (0.1, 1e-309)], 1e-6)
+    assert eps_mixed == pytest.approx(eps_approx + 0.3, abs=1e-9)

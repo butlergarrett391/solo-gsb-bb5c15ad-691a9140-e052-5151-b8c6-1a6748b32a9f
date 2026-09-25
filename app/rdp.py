@@ -52,7 +52,13 @@ SAMPLE_ORDERS: tuple[float, ...] = (2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 512.
 def single_rdp_curve(epsilon: float, delta: float) -> list[float]:
     """Return the RDP curve of one (epsilon, delta)-DP mechanism over RDP_ORDERS."""
     if delta > 0.0:
-        log_inv_delta = math.log(1.0 / delta)
+        # Numerically stable log(1/delta): the naive ``math.log(1.0 / delta)``
+        # overflows to ``inf`` for delta below ~5.6e-309 (e.g. 1e-309), which
+        # would poison the whole curve and wrongly reject the request.
+        # ``-math.log(delta)`` stays finite down to the smallest positive
+        # subnormal double and is bit-identical to the naive form for every
+        # delta whose reciprocal does not overflow.
+        log_inv_delta = -math.log(delta)
         return [
             epsilon + log_inv_delta / (alpha - 1.0)
             for alpha in RDP_ORDERS
